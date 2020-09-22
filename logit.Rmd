@@ -42,8 +42,8 @@ $$\log \left(\frac{p^{(i)}}{1-p^{(i)}}\right)=\theta_{0}+\theta_{1} x_{1}^{(i)}+
 
 where the superscript denotes the $i^{th}$ example, with $\theta_i$ being the parameters we want to estimate. We have $p + 1$ parameters because we have $p$ covariates.
 
-To fin the $\theta$ we define a cost function, such that every incorrect prediction will increase its value. We use 
-$$J=-\frac{1}{n} \sum_{i=1}^{n}\left(y^{(i)} \log \left(h\left(x^{(i)}\right)\right)+\left(1-y^{(i)}\right) \log \left(1-h\left(x^{(i)}\right)\right)\right)$$
+To fin the $\theta$ we will maximize the log-likelihood of all the data (under the Logistic Regression assumption). We use 
+$$LL=\frac{1}{n} \sum_{i=1}^{n}\left(y^{(i)} \log \left(h\left(x^{(i)}\right)\right)+\left(1-y^{(i)}\right) \log \left(1-h\left(x^{(i)}\right)\right)\right)$$
 
 
 With $n$ the number of training examples, $h(x)$ being the sigmoid function, inverse of logit function. $$h(x)=\frac{1}{1+e^{-x \cdot \theta}}$$
@@ -53,18 +53,19 @@ Where does it come from?
 It comes from the likelihood which is expressed as followed in the case of a binary output: 
 $$L(p)=P\left(y_{1}, y_{2}, \cdots, y_{N} \mid p\right)=\left[p^{y_{1}}(1-p)^{1-y_{1}}\right]\left[p^{y_{2}}(1-p)^{1-y_{2}}\right] \cdots\left[p^{y_{N}}(1-p)^{1-y_{N}}\right]$$
 
-That you can write:
+
+That you can write (still in the general cases):
 $$L(p)=\prod_{i=1}^{N} p^{y_{i}}(1-p)^{1-y_{i}}$$
 
 
 And usually: $$\ln L(p)=\sum_{i=1}^{N}\left[y_{i} \ln p+\left(1-y_{i}\right) \ln (1-p)\right]$$
 
-Let us recall that the likelihood is defined as the probability of the observed data conditionned to the parameters (here, the p, but more precisely $\theta$ as we supposed it as being the model).
+Let us recall that the likelihood is defined as the probability of the observed data conditionned to the parameters (here, the p, but more precisely $\theta$ as we supposed it as being the model. The expression to say this is "under the Logistic Regression assumption").
 
-Therefore, the value of $p$ (i.e $\theta$) that maximizes the previous value is the good one. Which equals to minimizing the opposite of this value. So we recover the cost function $J(\theta)$ previously introduced.
 
 ## Application in R
 
+We first implement the sigmoid and the cost functions (opposite of LL).
 
 ```{r}
 # sigmoid function
@@ -72,23 +73,39 @@ sigmoid <- function(z){
   return (1/(1+exp(-z)))
           }
 
-# cost function
+#cost function
 cost <- function(theta, X, y){
-  n <- length(y) # number of training examples
+  m <- length(y) # number of training examples
   h <- sigmoid(X %*% theta)
-  J <- (t(-y)%*%log(h)-t(1-y)%*%log(1-h))/n
-  return(J)
+  J <- (t(-y)%*%log(h)-t(1-y)%*%log(1-h))/m
+  J
 }
 
+```
+
+
+Now, according to the previous mathematic parts, we need to maximize $LL$ resp. to $\theta$. Therefore, we need to find the expression of the partial derivatives of $LL$.
+
+So, first we observe that we will have to derive $h$ resp. to $\theta$. A first useful expression to note is: $$\frac{\partial}{\partial z} h(z)=h(z)[1-h(z)]$$.
+
+Now we can step by step find the gradient for one data point. With this trick it should be easier to show that:
+
+$$\frac{\partial L L(\theta)}{\partial \theta_{j}}=\sum_{i=0}^{n}\left[y^{(i)}-h\left(\theta^{T} \mathbf{x}^{(i)}\right)\right] x_{j}^{(i)}$$
+
+If not, you can have a look here: https://web.stanford.edu/class/archive/cs/cs109/cs109.1166/pdfs/40%20LogisticRegression.pdf
+
+
+```{r}
 # gradient function
 grad <- function(theta, X, y){
-  n <- length(y) # number of training examples
+  m <- length(y) 
   
   h <- sigmoid(X%*%theta)
-  grad <- (t(X)%*%(h - y))/n
-  return(grad)
+  grad <- (t(X)%*%(h - y))/m
+  grad
 }
 ```
+
 
 
 Then it is the logistic regression function itself.
@@ -135,25 +152,27 @@ logisticPred <- function(prob){
 
 ## Application
 
-
-
 First, we generate data.
 ```{r}
 N <- 200 # number of points per class
-D <- 2 # dimensionality, we use 2D data for easy visulization
+p <- 2 # dimensionality, we use 2D data for easy visulization
 K <- 2 # number of classes, binary for logistic regression
 X <- data.frame() # data matrix (each row = single example, can view as xy coordinates)
 y <- data.frame() # class labels
 
-set.seed(56)
 
 for (j in (1:K)){
+  
   # t, m are parameters of parametric equations x1, x2
   t <- seq(0,1,length.out = N) 
+  
   # add randomness 
   m <- rnorm(N, j+0.5, 0.25) 
+  
   Xtemp <- data.frame(x1 = 3*t , x2 = m - t) 
   ytemp <- data.frame(matrix(j-1, N, 1))
+  
+  
   X <- rbind(X, Xtemp)
   y <- rbind(y, ytemp)
 }
@@ -187,10 +206,10 @@ gridPred = cbind(grid, Z)
 
 
 # decision boundary visualization
-ggplot() +   geom_point(data = data, aes(x=x1, y=x2, color = as.character(label)), size = 2, show.legend = F) + 
-  geom_tile(data = gridPred, aes(x = grid[, 1],y = grid[, 2], fill=as.character(Z)), alpha = 0.3, show.legend = F)+ 
+ggplot() +   geom_point(data = data, aes(x=x1, y=x2, color = as.character(label)), size = 2, show.legend = F) +
+  geom_tile(data = gridPred, aes(x = grid[, 1],y = grid[, 2], fill=as.character(Z)), alpha = 0.3, show.legend = F)+
   ggtitle('Decision Boundary for Logistic Regression') +
   coord_fixed(ratio = 1) +
-  theme_bw(base_size = 12) 
+  theme_bw(base_size = 12)
 ```
 
