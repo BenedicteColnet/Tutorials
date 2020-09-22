@@ -1,0 +1,67 @@
+---
+title: "Simple linear regression in R"
+author:
+- name: Bénédicte Colnet
+  affiliation: Inria 
+date: "September 2020"
+output:
+  html_document:
+    number_sections: no
+    toc: yes
+    toc_depth: 2
+  pdf_document:
+    toc: yes
+keywords: linear regression; simulations; R
+abstract: | 
+  In this tutorial, you will learn how to simulate a simple linear regression and recover expected statistics constant for this model.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("ggplot2")  # for the plot
+library("MASS") # for simulations
+```
+
+```{r}
+# example taken and adapted from https://daviddalpiaz.github.io/appliedstats/simple-linear-regression.html
+```
+
+
+```{r}
+ggplot(cars, aes(x = speed, y = dist)) +
+  geom_point() +
+  theme_classic()
+```
+
+Here we want to explain the distance it takes for the car to come to a stop (outcome y) as a function of the speed (variable that will help us to predict).
+
+Mathemathical speaking it means we are looking for a function such that: $$ Y = f(X) +\epsilon $$
+
+We can try a linear function of $X$ such as :
+$$Y=\beta_{0}+\beta_{1} X+\epsilon$$
+
+This model is a classical one and has several proporties we may want to review before.
+
+Considering this model as the true one, we can observe that:
+
+$$\mathrm{E}\left[Y_{i} \mid X_{i}=x_{i}\right]=\beta_{0}+\beta_{1} x_{i}$$
+And that its variance remains constant for each $x_i$: 
+$$\operatorname{Var}\left[Y_{i} \mid X_{i}=x_{i}\right]=\sigma^{2}$$
+
+
+Here we already did severak hypothesis, such as: 
+
+- **Linearity** of the relationship between $Y$ and $x_i$
+- **Independency**  because the errors are independent
+- **Normal** because the errors follow a normal distribution
+- **Equal** variance because the variance does not depend on $x_i$
+
+Now a challenge is to find a line that links correclty $X$ and $Y$ (Mathematically it means that we want to find parameters to estimate the true $\beta_{0}$ and $\beta_{1}$ parameters. The estimated values will be called $\hat{\beta_{0}}$ and $\hat{\beta_{1}}$). There are several ways to do so, one of the most famous and used being: $$\underset{\beta_{0}, \beta_{1}}{\operatorname{argmin}} \sum_{i=1}^{n}\left(y_{i}-\left(\beta_{0}+\beta_{1} x_{i}\right)\right)^{2}$$
+
+Which corresponds to minimizing the sum of all the squared distances from the points to the line. The value that will minimize this sum is called the **OLS estimator for $\beta$**.
+
+
+
+
+
+

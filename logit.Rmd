@@ -1,0 +1,196 @@
+---
+title: "Logistic Regression from Scratch in R"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    number_sections: no
+    toc: yes
+    toc_depth: 2
+abstract: | 
+  This notebook is a tutorial to reproduce step by step a logistic regression in R (but without the glm function!). Although logistic regression is often said to be a classifier, it can also be used for regression: to find a probability of a binary (or multilevel) event.
+  
+  Credits: https://towardsdatascience.com/logistic-regression-from-scratch-in-r-b5b122fd8e83  and https://github.com/JunWorks/Logistic-Regression-from-scratch-in-R Which I adapted to my purpose and questions at the moment. For example the details of the origin of the cost function is detailed in comparison with the original article. (And other changes)
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Clear any existing variables
+rm(list = ls())
+
+# Set seed for reproducibility
+set.seed(123)
+
+library(ggplot2) # plot
+library(dplyr) # mutate function
+
+```
+
+
+## Background
+
+In statistics and data science, logistic regression is used to predict the probability of a certain class or event (let imagine won or not at the lotery that will be encoded in 0 and 1). Note that it can also be multinomial (1, 2, 3 etc). But here we focus only on the binomial case.
+
+
+We consider the probability $p$ of the event, instead of predicting p directly, we predict the log of odds. $$\operatorname{logit}(p)=\log \left(\frac{p}{1-p}\right)$$
+
+
+This trick allows the range of values to be in between $-\infty$ and $+\infty$. And then we put the linear model of the covariates. 
+
+$$\log \left(\frac{p^{(i)}}{1-p^{(i)}}\right)=\theta_{0}+\theta_{1} x_{1}^{(i)}+\theta_{2} x_{2}^{(i)}+\ldots$$
+
+where the superscript denotes the $i^{th}$ example, with $\theta_i$ being the parameters we want to estimate. We have $p + 1$ parameters because we have $p$ covariates.
+
+To fin the $\theta$ we define a cost function, such that every incorrect prediction will increase its value. We use 
+$$J=-\frac{1}{n} \sum_{i=1}^{n}\left(y^{(i)} \log \left(h\left(x^{(i)}\right)\right)+\left(1-y^{(i)}\right) \log \left(1-h\left(x^{(i)}\right)\right)\right)$$
+
+
+With $n$ the number of training examples, $h(x)$ being the sigmoid function, inverse of logit function. $$h(x)=\frac{1}{1+e^{-x \cdot \theta}}$$
+
+Where does it come from?
+
+It comes from the likelihood which is expressed as followed in the case of a binary output: 
+$$L(p)=P\left(y_{1}, y_{2}, \cdots, y_{N} \mid p\right)=\left[p^{y_{1}}(1-p)^{1-y_{1}}\right]\left[p^{y_{2}}(1-p)^{1-y_{2}}\right] \cdots\left[p^{y_{N}}(1-p)^{1-y_{N}}\right]$$
+
+That you can write:
+$$L(p)=\prod_{i=1}^{N} p^{y_{i}}(1-p)^{1-y_{i}}$$
+
+
+And usually: $$\ln L(p)=\sum_{i=1}^{N}\left[y_{i} \ln p+\left(1-y_{i}\right) \ln (1-p)\right]$$
+
+Let us recall that the likelihood is defined as the probability of the observed data conditionned to the parameters (here, the p, but more precisely $\theta$ as we supposed it as being the model).
+
+Therefore, the value of $p$ (i.e $\theta$) that maximizes the previous value is the good one. Which equals to minimizing the opposite of this value. So we recover the cost function $J(\theta)$ previously introduced.
+
+## Application in R
+
+
+```{r}
+# sigmoid function
+sigmoid <- function(z){
+  return (1/(1+exp(-z)))
+          }
+
+# cost function
+cost <- function(theta, X, y){
+  n <- length(y) # number of training examples
+  h <- sigmoid(X %*% theta)
+  J <- (t(-y)%*%log(h)-t(1-y)%*%log(1-h))/n
+  return(J)
+}
+
+# gradient function
+grad <- function(theta, X, y){
+  n <- length(y) # number of training examples
+  
+  h <- sigmoid(X%*%theta)
+  grad <- (t(X)%*%(h - y))/n
+  return(grad)
+}
+```
+
+
+Then it is the logistic regression function itself.
+
+```{r}
+logisticReg <- function(X, y){
+  #remove NA rows
+  X <- na.omit(X)
+  y <- na.omit(y)
+  #add bias term and convert to matrix
+  X <- mutate(X, bias =1)
+  #move the bias column to col1
+  X <- as.matrix(X[, c(ncol(X), 1:(ncol(X)-1))])
+  y <- as.matrix(y)
+  #initialize theta
+  theta <- matrix(rep(0, ncol(X)), nrow = ncol(X))
+  #use the optim function to perform gradient descent
+  costOpti <- optim(theta, fn = cost, gr = grad, X = X, y = y)
+  #return coefficients
+  return(costOpti$par)
+}
+```
+
+
+
+```{r}
+# probability of getting 1
+logisticProb <- function(theta, X){
+  X <- na.omit(X)
+  #add bias term and convert to matrix
+  X <- mutate(X, bias =1)
+  X <- as.matrix(X[,c(ncol(X), 1:(ncol(X)-1))])
+  return(sigmoid(X%*%theta))
+}
+
+# y prediction
+logisticPred <- function(prob){
+  return(round(prob, 0))
+}
+```
+
+
+
+
+## Application
+
+
+
+First, we generate data.
+```{r}
+N <- 200 # number of points per class
+D <- 2 # dimensionality, we use 2D data for easy visulization
+K <- 2 # number of classes, binary for logistic regression
+X <- data.frame() # data matrix (each row = single example, can view as xy coordinates)
+y <- data.frame() # class labels
+
+set.seed(56)
+
+for (j in (1:K)){
+  # t, m are parameters of parametric equations x1, x2
+  t <- seq(0,1,length.out = N) 
+  # add randomness 
+  m <- rnorm(N, j+0.5, 0.25) 
+  Xtemp <- data.frame(x1 = 3*t , x2 = m - t) 
+  ytemp <- data.frame(matrix(j-1, N, 1))
+  X <- rbind(X, Xtemp)
+  y <- rbind(y, ytemp)
+}
+
+# combine the data
+data <- cbind(X,y)
+colnames(data) <- c(colnames(X), 'label')
+
+# visualize the data:
+ggplot(data) + geom_point(aes(x=x1, y=x2, color = as.character(label)), size = 2) + 
+  scale_colour_discrete(name  ="Label") + 
+  ylim(0, 3) + coord_fixed(ratio = 1) +
+  ggtitle('Data to be classified') +
+  theme_bw(base_size = 12) +
+  theme(legend.position=c(0.85, 0.87))
+```
+
+Then, we learn.
+
+```{r}
+# training
+theta <- logisticReg(X, y)
+
+# generate a grid for decision boundary, this is the test set
+grid <- expand.grid(seq(0, 3, length.out = 100), seq(0, 3, length.out = 100))
+# predict the probability
+probZ <- logisticProb(theta, grid)
+# predict the label
+Z <- logisticPred(probZ)
+gridPred = cbind(grid, Z)
+
+
+# decision boundary visualization
+ggplot() +   geom_point(data = data, aes(x=x1, y=x2, color = as.character(label)), size = 2, show.legend = F) + 
+  geom_tile(data = gridPred, aes(x = grid[, 1],y = grid[, 2], fill=as.character(Z)), alpha = 0.3, show.legend = F)+ 
+  ggtitle('Decision Boundary for Logistic Regression') +
+  coord_fixed(ratio = 1) +
+  theme_bw(base_size = 12) 
+```
+
