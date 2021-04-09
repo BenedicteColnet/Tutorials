@@ -1,0 +1,281 @@
+---
+title: "IPW"
+author:
+- name: Bénédicte Colnet, Matthieu Doutreligne, Dinh Phong Nguyen, and Paul Roussel
+  affiliation: Inria
+date: "April 2021"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    number_sections: no
+    toc: yes
+    toc_depth: 2
+keywords: average treatment effect; machine learning; IPW;
+abstract: | 
+  This tutorial proposes to perform a small simulation and investigate the IPW estimator behavior.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(MASS)
+```
+
+# Discussion about variance
+
+We had a discussion about variance when the propensity score is known versus when it is not known. We guessed that this was similar to estimated the probability to be treated in the RCT, versus taking the theoretical probability (usually, 0.5). First, let's check our intuition. For this, we take the previous simulation we had for a RCT, and just estimate the ATE with and without using that $e=0.5$.
+
+```{r}
+linear_simulation <- function(samples = 99){
+  X = mvrnorm(n=samples, mu=c(1, 1, 1, 1), Sigma=diag(4))
+  data <- as.data.frame(X)
+  names(data) <- paste("X", 1:4, sep = "")
+  data$W <- rbinom(nrow(data), 1, 0.5)
+  
+  # generate linear outcome
+  error = rnorm(n = samples, mean = 0, sd = 0.2)
+  data$Y =3*data$X1 + 2*data$X2 + - 2*data$X3 - 0.8*data$X4 + data$W*(2*data$X1 +5*data$X3 + 3*data$X4) + error
+  
+  return(data)
+}
+
+
+difference_in_means <- function(dataset) {
+  treated_idx <- which(dataset$W == 1)
+  control_idx <- which(dataset$W == 0)
+  
+  # Filter treatment / control observations, pulls outcome variable as a vector
+  y1 <- dataset[treated_idx, "Y"] # Outcome in treatment grp
+  y0 <- dataset[control_idx, "Y"] # Outcome in control group
+  
+  n1 <- sum(dataset$W)     # Number of obs in treatment
+  n0 <- sum(1 - dataset$W) # Number of obs in control
+
+  # Difference in means is ATE
+  tauhat <- mean(y1) - mean(y0)
+  
+  # 95% Confidence intervals
+  se_hat <- sqrt( var(y0)/(n0-1) + var(y1)/(n1-1) )
+  lower_ci <- tauhat - 1.96 * se_hat
+  upper_ci <- tauhat + 1.96 * se_hat
+  
+  return(c(ATE = tauhat, lower_ci = lower_ci, upper_ci = upper_ci))
+}
+
+
+difference_in_means_with_e <- function(dataset) {
+  
+  treated_idx <- which(dataset$W == 1)
+  control_idx <- which(dataset$W == 0)
+  
+  # Filter treatment / control observations, pulls outcome variable as a vector
+  y1 <- dataset[treated_idx, "Y"] # Outcome in treatment grp
+  y0 <- dataset[control_idx, "Y"] # Outcome in control group
+  
+  n1 <- floor(nrow(dataset)/2)    
+  n0 <- n1 
+
+  # Difference in means is ATE
+  tauhat <- mean(y1) - mean(y0)
+  
+  # 95% Confidence intervals
+  se_hat <- sqrt( var(y0)/(n0-1) + var(y1)/(n1-1) )
+  lower_ci <- tauhat - 1.96 * se_hat
+  upper_ci <- tauhat + 1.96 * se_hat
+  
+  return(c(ATE = tauhat, lower_ci = lower_ci, upper_ci = upper_ci))
+}
+
+
+results <- data.frame("estimator" = c(), "estimate" = c())
+
+for (i in 1:100){
+  sim_lin <- linear_simulation()
+  tau_dm <- difference_in_means(sim_lin)
+  new_result_lin = data.frame("estimator" = "DM", "estimate" = tau_dm["ATE"])
+  tau_dm_e<- difference_in_means_with_e(sim_lin)
+  new_result_lin_ols = data.frame("estimator" = "DM_with_e", "estimate" = tau_dm_e["ATE"])
+  results <- rbind(results, new_result_lin, new_result_lin_ols)
+}
+```
+
+
+I don't see the expected phenomenon...
+```{r}
+sd(results[results$estimator == "DM", "estimate"])
+sd(results[results$estimator == "DM_with_e", "estimate"])
+```
+
+# A simple and a less simple case
+
+Simulation is inspired from **Quasi-Oracle Estimation of Heterogeneous Treatment Effects**, a paper from Nie & Wager, but with adaptation to this set up so that we have a simple and a complex propensity score to estimate.
+
+Note that the true ATE is easy to compute, as it is:
+
+$(\mathbb{E}[X_1]+\mathbb{E}[X_2])/2 = 0.5$
+
+And because we take uniform distribution for the covariates.
+
+
+```{r}
+generate_simulation_A <- function(propensity = "simple"){
+  X = matrix(runif(n*5, min=0, max=1), 1000, 5)
+  
+  X_names <- paste("X", 1:5, sep = "")
+  covariates_names <- c(X_names)
+  simulation <- as.data.frame(X)
+  names(simulation) = X_names
+  
+  # generate baseline b and cate
+  b = sin(pi * X[,1] * X[,2]) + 2 * (X[,3] - 0.5)^2 + X[,4] + 0.5 * X[,5]
+  cate = (X[,1] + X[,2]) / 2
+  
+  if(propensity == "simple"){
+    e <- as.vector(as.matrix(simulation[, covariates_names]) %*% c(-0.4, 0, -0.3, -0.3, 0))
+    e = 1 / (1 + exp(-e))
+  } else if (propensity == "complex"){
+    eta = 0.01
+    e = pmax(eta, pmin(sin(pi * X[,1] * X[,2]), 1-eta))
+  }
+  
+  simulation$W <- rbinom(length(e), 1, e)
+  
+  # add Y
+  error = rnorm(n = nrow(simulation), mean = 0, sd = 0.2)
+  simulation$Y <- error + b + (simulation$W == 1)*cate
+  
+  return(simulation)
+}
+```
+
+Naive difference in mean estimator, to check that the simulation is confounded.
+
+```{r}
+simulation <- generate_simulation_A()
+t.test(simulation[simulation$W == 1, "Y"], simulation[simulation$W == 0, "Y"])
+```
+Perfect! Here the naive ATE estimated with a difference-in-means estimator is about 0.25, with a confidence interval such that there is no doubt we are well-confounded because it does not cut 0.5. Now, let's investigate an IPW estimator.
+
+We recall the IPW function.
+
+```{r}
+ipw <- function(dataset, p) {
+  W <- dataset$W
+  Y <- dataset$Y
+  G <- ((W - p) * Y) / (p * (1 - p))
+  tau.hat <- mean(G)
+  se.hat <- sqrt(var(G) / (length(G) - 1))
+  c(ATE=tau.hat, lower_ci = tau.hat - 1.96 * se.hat, upper_ci = tau.hat + 1.96 * se.hat)
+}
+```
+
+But here, we nee to provide an estimation for p. A super simple one, and direct one, is the logistic regression.
+
+
+```{r}
+# Computing the propensity score by logistic regression of W on X.
+p_logistic.fit <- glm(W ~ ., data = simulation[, !names(simulation) %in% c("Y")], family = "binomial")
+p_logistic <- predict(p_logistic.fit, type = "response")
+
+hist(p_logistic, main = "Histogram: Logistic Regression Propensity Scores"
+     , xlab = "Propensity Score", col = "cornflowerblue", las = 1)
+```
+
+The weights are bounded away from 0 and 1 naturally.
+
+```{r}
+ipw(simulation, p_logistic)
+```
+It works! 
+
+Let's try the more complex one.
+
+```{r}
+simulation_complex <- generate_simulation_A(propensity = "complex")
+p_logistic.fit.complex <- glm(W ~ ., data = simulation_complex[, !names(simulation_complex) %in% c("Y")], family = "binomial")
+p_logistic.complex <- predict(p_logistic.fit.complex, type = "response")
+hist(p_logistic.complex, main = "Histogram: Logistic Regression Propensity Scores"
+     , xlab = "Propensity Score", col = "cornflowerblue", las = 1)
+```
+
+We see that some values are extreme, and also that the estimated ATE is less well estimated now..
+
+```{r}
+ipw(simulation_complex, p_logistic.complex)
+```
+We can use a causal forest to estimate a propensity score.
+
+```{r}
+library(grf)       # generalized random forests
+cf <- causal_forest(simulation_complex[,covariate_names], simulation_complex$Y, simulation_complex$W, num.trees = 500)
+p_rf = cf$W.hat
+hist(p_rf, main = "Histogram: Regression Forest Propensity Scores"
+     , xlab = "Propensity Score", col = "cornflowerblue", las = 1)
+```
+
+```{r}
+plot(x = p_rf, y = p_logistic.complex
+     , xlab = "Propensity Score (Random Forest)", ylab = "Propensity Score (Logistic Regression)"
+     , col = adjustcolor("black", alpha.f=0.4), pch=19, las = 1)
+abline(0, 1, lty = "dashed")
+```
+
+They look pretty different...
+
+Because the random forest has extreme values, we cut the extreme values.
+
+```{r}
+p_rf <- replace(p_rf, p_rf==1, 0.98)
+ipw(simulation_complex, p_rf)
+```
+Any idea to recover this complex propensity score??
+
+# Stratification
+
+
+```{r}
+compute_stratification <- function(DF, nb_strat = 3, bin = "quantile"){
+  
+  temp <- DF
+  N <- nrow(temp)
+  
+  pi_s_reg <- glm(W ~ ., family = "binomial", data = temp[, !names(temp) %in% c("Y")])
+  
+  pi_strat <- predict(pi_s_reg, newdata = temp[, !names(temp) %in% c("Y")], type="response")
+  
+  temp$pi_strat <- (1 - pi_strat) / pi_strat
+  
+  # decompose in strata 
+  if (bin == "quantile"){
+    temp$strata <- as.numeric(cut_number(temp$pi_strat, nb_strat))
+  } 
+  else if (bin == "regular"){
+    temp$strata <- as.numeric(cut(temp$pi_strat, nb_strat))
+  }
+  else {
+    print("Wrong bin mentioned")
+    break
+  }
+  
+  tau_strat <- 0
+  for (s in unique(temp$strata)){
+    # compute strata ate
+    strata_ate <- mean(temp[temp$strata == s & temp$W == 1, "Y"]) - mean(temp[temp$strata == s & temp$W == 0, "Y"])
+    weigth <- nrow(temp[temp$strata == s, ]) / N
+    tau_strat <- tau_strat + weigth*strata_ate
+  }
+  
+  return(tau_strat)
+}
+
+compute_stratification(simulation, nb_strat = 1)
+compute_stratification(simulation, nb_strat = 2)
+compute_stratification(simulation, nb_strat = 3)
+compute_stratification(simulation, nb_strat = 4)
+compute_stratification(simulation, nb_strat = 5)
+compute_stratification(simulation, nb_strat = 10)
+compute_stratification(simulation, nb_strat = 15)
+compute_stratification(simulation, nb_strat = 20)
+```
+
