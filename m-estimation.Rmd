@@ -1,0 +1,399 @@
+---
+title: "Robust statistic and M-estimation notebook"
+author:
+  - Bénédicte Colnet [Inria, Paris-Saclay]
+date: "December 2021"
+output:
+  html_document:
+    code_folding: "hide"
+    number_sections: no
+    toc: yes
+    toc_depth: 2
+  pdf_document:
+    toc: yes
+abstract: | 
+  This notebook supports a crash course on M-estimation with a focus on causal inference. Theoretical results illustrated here are given by "Stratification and weighting via the propensity score in estimation of causal treatment effects: a comparative study" form Lunceford & Davidian in 2004, and the code is inpired from the *geex* library from Bradley Saul. 
+  In this tutorial we illustrate how to use the geex library, along with illustration of the results about variance diminution when using oracle IPW or not, and when adding covariates related to the outcome in the doubly robust estimator.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+set.seed(123)
+
+# libraries
+library(MASS)
+library(ggplot2)
+library(dplyr) # case_when and others
+library(geex)
+library("mvtnorm")
+```
+
+
+We first propose to illustrate the paper from Lunceford & Davidian with asymptotic variance reduction.
+
+# Recover variance diminution from Lunceford & Davidian
+
+## If IPW is oracle or not
+
+LD shows that the asymptotic variance of the oracle IPW is smaller than the IPW estimator when propensity scores are estimated with the data (assuming a known parametric model for the weights).
+We illustrate this counter-intuitive theoretical result with simulations.
+
+
+```{r}
+# by default the setting where strong association between V and Y
+# True ATE is equal to 2
+generate_lunceford <- function(n = 1000,  return_oracles = FALSE) {
+
+  # parameters from the paper (hard coded)
+  xi = c(-1, 1, 1)
+  nu = c(0, -1, 1, -1, 2)
+  beta = c(0, 0.6, -0.6, 0.6)
+  tau_0 <- c(-1, -1, 1, 1)
+  tau_1 <- tau_0 * -1
+  Sigma_X3 <- matrix(c(1, 0.5, -0.5, -0.5, 
+                       0.5, 1, -0.5, -0.5,
+                       -0.5, -0.5, 1, 0.5, 
+                       -0.5, -0.5, 0.5, 1), ncol = 4, byrow = TRUE)
+  
+  # beginning of simulations
+  X.3 <- rbinom(n, 1, prob = 0.2)
+  V.3 <- rbinom(n, 1, prob = (0.75 * X.3 + (0.25 * (1 - X.3))))
+  hold <- rmvnorm(n,  mean = rep(0, 4), Sigma_X3)
+  colnames(hold) <- c("X.1", "V.1", "X.2", "V.2")
+  hold <- cbind(hold, X.3, V.3)
+  hold <- apply(hold, 1, function(x){
+    x[1:4] <- x[1:4] + tau_1^(x[5])*tau_0^(1 - x[5])
+    x})
+  hold <- t(hold)[, c("X.1", "X.2", "X.3", "V.1", "V.2", "V.3")]
+  X <- cbind(Int = 1, hold)
+  e <- plogis(X[, 1:4] %*% beta)
+  A <- rbinom(n, 1, prob = e)
+  X <- cbind(X[, 1:4], A, X[, 5:7])
+  
+  if(!return_oracles){
+    return(data.frame(X[ , -1], Y = X %*% c(nu, xi) + rnorm(n)))
+  } else {
+    return(data.frame(X[ , -1], Y = X %*% c(nu, xi) + rnorm(n), e = e))
+  }
+}
+
+
+oracle_ipw <- function(dataframe){
+  Y = dataframe$Y
+  e = dataframe$e
+  A = dataframe$A
+  return(mean(Y * (A/e - (1-A)/(1-e))))
+}
+
+
+ipw_with_logit <- function(dataframe){
+  propensity.model <- glm(A~X.1+X.2+X.3, data = dataframe, family="binomial")
+  e.hat <- predict(propensity.model, type="response")
+  Y = dataframe$Y
+  A = dataframe$A
+  return(mean(Y * (A/e.hat - (1-A)/(1-e.hat))))
+}
+
+# Custom AIPW with linear and logit model
+aipw_linear <- function(covariates_names_vector_treatment,
+                        covariates_names_vector_outcome,
+                        dataframe,
+                        outcome_name = "Y",
+                        treatment_name = "A",
+                        n.folds = 2){
+  
+  n_obs <- nrow(dataframe)
+  
+  # Prepare formulas
+  fmla.treatment <- formula(paste0(treatment_name,"~."))
+  fmla.outcome <- formula(paste0(outcome_name,"~."))
+  
+  # Cross-fitted estimates of E[Y|X,W=1], E[Y|X,W=0] and e(X) = P[W=1|X]
+  mu.hat.1 <- rep(NA, n_obs)
+  mu.hat.0 <- rep(NA, n_obs)
+  e.hat <- rep(NA, n_obs)
+  
+  if (n.folds > 1){
+    
+    indices <- split(seq(n_obs), sort(seq(n_obs) %% n.folds))
+    
+    for (idx in indices) {
+      
+      # Fit model on the set -idx
+      mu.1.model <- lm(fmla.outcome, 
+                       data = dataframe[-idx & dataframe[, treatment_name] == 1, c(outcome_name, covariates_names_vector_outcome)])
+      mu.0.model <- lm(fmla.outcome, 
+                       data = dataframe[-idx & dataframe[, treatment_name] == 0, c(outcome_name, covariates_names_vector_outcome)])
+      propensity.model <- glm(fmla.treatment, data = dataframe[-idx, c(treatment_name, covariates_names_vector_treatment)], family="binomial")
+      
+      # Predict with cross-fitting
+      mu.hat.1[idx] <- predict(mu.1.model, newdata = dataframe[idx, c(outcome_name, covariates_names_vector_outcome)], type="response")
+      mu.hat.0[idx] <- predict(mu.0.model, newdata = dataframe[idx, c(outcome_name, covariates_names_vector_outcome)], type="response")
+      e.hat[idx] <- predict(propensity.model, newdata = dataframe[idx,  c(treatment_name, covariates_names_vector_treatment)], type="response")
+      
+    }
+  } else if (n.folds == 0 | n.folds == 1){
+    
+    # Fit model on all observations
+    mu.1.model <- lm(fmla.outcome, 
+                     data = dataframe[dataframe[, treatment_name] == 1, c(outcome_name, covariates_names_vector_outcome)])
+    mu.0.model <- lm(fmla.outcome, 
+                     data = dataframe[dataframe[, treatment_name] == 0, c(outcome_name, covariates_names_vector_outcome)])
+    propensity.model <- glm(fmla.treatment, data = dataframe[, c(treatment_name, covariates_names_vector_treatment)], family="binomial")
+    
+    # Predict with same observations
+    mu.hat.1 <- predict(mu.1.model, newdata = dataframe)
+    mu.hat.0 <- predict(mu.0.model, newdata = dataframe)
+    e.hat <- predict(propensity.model)
+  } else {
+    stop("n.fold must be a positive integer")
+  }
+
+    
+  # Compute the summand in AIPW estimator
+  W <- dataframe[, treatment_name]
+  Y <- dataframe[, outcome_name]
+  
+  ## T- learner
+  t.learner <- mean(mu.hat.1) - mean(mu.hat.0)
+  
+  ## AIPW
+  aipw <- (mu.hat.1 - mu.hat.0
+           + W / e.hat * (Y -  mu.hat.1)
+           - (1 - W) / (1 - e.hat) * (Y -  mu.hat.0))
+  
+  aipw <- mean(aipw)
+  
+  ## IPW
+  ipw = mean(Y * (W/e.hat - (1-W)/(1-e.hat)))
+  
+  res = c("ipw" = ipw, "t.learner" = t.learner, "aipw" = aipw)
+  
+  return(res)
+  
+}
+
+```
+
+```{r}
+comparison_oracle_ipw <- data.frame("estimate" = c(),
+                                    "method" = c())
+
+for (i in 1:100){
+  simulation <- generate_lunceford(n=600, return_oracles = TRUE)
+  new_row <- data.frame("estimate" = c(oracle_ipw(simulation), ipw_with_logit(simulation)),
+                        "method" = c("oracle", "propensity score estimated with logit"))
+  comparison_oracle_ipw <- rbind(comparison_oracle_ipw, new_row)
+}
+
+```
+
+```{r}
+ggplot(comparison_oracle_ipw, aes(x = method, y = estimate)) +
+  geom_boxplot(alpha = 0.5) +
+  theme_minimal() +
+  xlab("") +
+  ylab("ATE")
+```
+
+### If AIPW includes additional covariates
+
+LD also show that adding covariates related to the outcome in the doubly robust estimator allows a lower asymptotic variance, always in the case where the parametric models for the nuisance functions are known. The results are also illustrated with a simulation.
+
+
+```{r}
+comparison_additional_cov_aipw <- data.frame("estimate" = c(),
+                                             "method" = c())
+
+
+for (i in 1:100){
+  simulation <- generate_lunceford(n = 2000, return_oracles = TRUE)
+  
+  
+  estimates.extended <- aipw_linear(covariates_names_vector_treatment = c("X.1", "X.2", "X.3",  "V.1", "V.2", "V.3"),
+                        covariates_names_vector_outcome = c("X.1", "X.2", "X.3",  "V.1", "V.2", "V.3"),
+                        dataframe = simulation,
+                        outcome_name = "Y",
+                        treatment_name = "A",
+                        n.folds = 2)
+  
+  estimates.minimal <- aipw_linear(covariates_names_vector_treatment = c("X.1", "X.2", "X.3"),
+                        covariates_names_vector_outcome = c("X.1", "X.2", "X.3"),
+                        dataframe = simulation,
+                        outcome_name = "Y",
+                        treatment_name = "A",
+                        n.folds = 2)
+  
+  new_row <- data.frame("estimate" = c(estimates.minimal["aipw"], estimates.extended["aipw"]),
+                        "method" = c("minimal set", "with additional covariates"))
+  
+  comparison_additional_cov_aipw <- rbind(comparison_additional_cov_aipw, new_row)
+}
+```
+
+```{r}
+ggplot(comparison_additional_cov_aipw, aes(x = method, y = estimate)) +
+  geom_boxplot(alpha = 0.5) +
+  theme_minimal() +
+  xlab("") +
+  ylab("ATE") 
+```
+
+# Package geex
+
+## Example with ratio
+
+```{r}
+# enter the psi function
+ratio_estfun <- function(data) {
+  
+  # affect columns corresponding to covariates into vectors
+  Y1 <- data$Y1; Y2 <- data$Y2
+  
+  # Psi function
+  function(theta) {
+    c(Y1 - theta[1], Y2 - theta[2],
+      theta[1] - (theta[3] * theta[2]))
+  } 
+}
+
+results <- m_estimate(estFUN = ratio_estfun, data = geexex, root_control = setup_root_control(start = c(1,1,1)))
+
+coef(results)
+vcov(results)
+```
+
+## Example with AIPW (doubly-robust estimator)
+
+```{r}
+# assumes the user will passs of already fitted model objects for the three nuisance models
+dr_estFUN <- function(data, models) {
+  
+  # grab outcome and treatment from the dataset
+  Z <- data$Z
+  Y <- data$Y
+  
+  # grab the already fitted models for the nuisance function
+  Xe <- grab_design_matrix(data = data,
+    rhs_formula = grab_fixed_formula(models$e))
+  Xm0 <- grab_design_matrix(data = data,
+    rhs_formula = grab_fixed_formula(models$m0))
+  Xm1 <- grab_design_matrix(data = data,
+    rhs_formula = grab_fixed_formula(models$m1))
+  e_pos <- 1:ncol(Xe)
+  
+  m0_pos <- (max(e_pos) + 1):(max(e_pos) + ncol(Xm0))
+  m1_pos <- (max(m0_pos) + 1):(max(m0_pos) + ncol(Xm1))
+  
+  # converts fitted model object to an estimating function
+  e_scores <- grab_psiFUN(models$e, data)
+  m0_scores <- grab_psiFUN(models$m0, data)
+  m1_scores <- grab_psiFUN(models$m1, data)
+  
+  function(theta) {
+      e <- plogis(Xe %*% theta[e_pos])
+      m0 <- Xm0 %*% theta[m0_pos]
+      m1 <- Xm1 %*% theta[m1_pos]
+      rd_hat <- (Z*Y - (Z - e) * m1) / e - ((1 - Z) * Y - (Z - e) * m0) / (1 - e)
+      c(e_scores(theta[e_pos]),
+        m0_scores(theta[m0_pos]) * (Z == 0),
+        m1_scores(theta[m1_pos]) * (Z == 1),
+        rd_hat - theta[length(theta)])
+    }
+}
+```
+
+
+```{r}
+estimate_dr <- function(data, propensity_formula, outcome_formula) {
+  e_model <- glm(propensity_formula, data = data, family = binomial)
+  m0_model <- glm(outcome_formula, subset = (Z == 0), data = data)
+  m1_model <- glm(outcome_formula, subset = (Z == 1), data = data)
+  models <- list(e = e_model, m0 = m0_model, m1 = m1_model)
+  nparms <- sum(unlist(lapply(models, function(x) length(coef(x))))) + 1
+  m_estimate(estFUN = dr_estFUN, data = data, root_control = setup_root_control(start = rep(0, nparms)), outer_args = list(models = models))
+  }
+```
+
+
+
+
+
+# Personal example
+
+```{r}
+varcovar <- matrix(c(1, 0.8,
+                0.8, 1), 
+                nrow = 2, ncol = 2)
+
+varcovar.outliers <- matrix(c(2, 0.8,
+                0.8, 2), 
+                nrow = 2, ncol = 2)
+
+averages <- c(X = 0, Y = 0)
+first.population <- as.data.frame(mvrnorm(500, mu = averages, Sigma = varcovar))
+second.population <- as.data.frame(mvrnorm(50, mu = averages, Sigma = varcovar.outliers))
+
+first.population$population <- rep("main population", nrow(first.population))
+second.population$population <- rep("outliers", nrow(second.population))
+data.sample <- rbind(first.population, second.population)
+```
+
+```{r}
+ggplot(data.sample, aes(x = X, y = Y)) +
+  geom_point() +
+  theme_minimal() +
+  geom_smooth(method = "lm", se=FALSE) +
+  geom_smooth(data=subset(data.sample, population == "main population"), method='lm', se=FALSE, color = "red")
+
+ggplot(data.sample, aes(x = X, y = Y, color = population)) +
+  geom_point() +
+  theme_minimal()+
+  theme(legend.position = "bottom") 
+```
+
+Would I have a very big sample, what would I measure ?
+
+```{r}
+first.population <- as.data.frame(mvrnorm(500000, mu = averages, Sigma = varcovar))
+second.population <- as.data.frame(mvrnorm(50000, mu = averages, Sigma = varcovar.outliers))
+
+first.population$population <- rep("main population", nrow(first.population))
+second.population$population <- rep("outliers", nrow(second.population))
+big.data.sample <- rbind(first.population, second.population)
+```
+
+
+```{r}
+lm.big.data <- lm(Y~X, data = big.data.sample)
+true.beta <- lm.big.data$coefficients["X"]
+true.beta
+```
+
+
+
+```{r}
+lm.big.data.without.outliers <- lm(Y~X, data = first.population)
+true.beta.without.outliers <- lm.big.data.without.outliers$coefficients["X"]
+true.beta.without.outliers
+```
+
+
+```{r}
+estimates <- c()
+for (i in 1:1000){
+  first.population <- as.data.frame(mvrnorm(500, mu = averages, Sigma = varcovar))
+  second.population <- as.data.frame(mvrnorm(50, mu = averages, Sigma = varcovar.outliers))
+  
+  first.population$population <- rep("main population", nrow(first.population))
+  second.population$population <- rep("outliers", nrow(second.population))
+  data.sample <- rbind(first.population, second.population)
+  estimates <- c(estimates, lm(Y~X, data = data.sample)$coefficients["X"])
+}
+```
+
+```{r}
+hist(estimates)
+```
+
